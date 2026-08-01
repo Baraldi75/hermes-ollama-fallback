@@ -1,6 +1,8 @@
 # hermes-ollama-fallback
 
-Skill + script de setup para o **Hermes Agent** usar o **Ollama self-hosted no Proxmox** como *fallback* (ou *primário*) do modelo.
+Skill + script de setup para o **Hermes Agent** usar uma cadeia de *fallback*
+que começa em **OpenRouter** (`nvidia/nemotron-3-ultra-550b-a55b:free`) e cai para o
+**Ollama self-hosted no Proxmox** (`hermes3:8b`, `deepseek-r1:8b`) quando o primário falha.
 
 Endereço fixo do Proxmox usado em tudo abaixo: **`192.168.31.2:11434`**
 (é sempre o mesmo na sua instalação — ajuste a variável no script se mudar).
@@ -32,6 +34,9 @@ Endereço fixo do Proxmox usado em tudo abaixo: **`192.168.31.2:11434`**
    curl -X POST http://192.168.31.2:11434/api/pull -H "Content-Type: application/json" \
      -d '{"name":"deepseek-r1:8b","stream":false}'
    ```
+4. `OPENROUTER_API_KEY` presente no `.env` do Hermes — usada automaticamente pelo
+   fallback do OpenRouter (o script não hardcode nenhuma chave). Pegue uma em
+   https://openrouter.ai/keys se não tiver.
 
 ---
 
@@ -77,10 +82,12 @@ agent:
   reasoning_effort: ""               # vazio OBRIGATÓRIO (global)
 
 fallback_providers:
-  - provider: custom
+  - provider: openrouter                # 1o fallback (usa OPENROUTER_API_KEY do .env)
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
+  - provider: custom                     # 2o fallback -> Ollama Proxmox
     model: hermes3:8b
     base_url: http://192.168.31.2:11434/v1
-  - provider: custom
+  - provider: custom                     # 3o fallback -> Ollama Proxmox
     model: deepseek-r1:8b
     base_url: http://192.168.31.2:11434/v1
 ```
@@ -94,12 +101,14 @@ fallback_providers:
 3. **`agent.reasoning_effort` DEVE ficar vazio (`""`).** Com `medium` (default), o Hermes manda `reasoning_effort` e o Ollama antigo rejeita com HTTP 400 "does not support thinking". Vazio → `reasoning_config=None` → o plugin custom não manda o campo. ⚠️ Isso desliga o thinking **globalmente** (também no primário na nuvem). Se o seu primário usa reasoning, atualize o Ollama ou mantenha um primário que não dependa disso.
 4. **`hermes config set fallback_providers '[...]'` NÃO funciona** — salva a lista como string e o Hermes ignora. Por isso o script edita o `config.yaml` direto (com backup).
 5. O `patch`/edição direta do `config.yaml` por ferramenta é bloqueado por segurança no Hermes, por isso usamos um script python/bash que roda no shell da máquina (com backup antes).
+6. **O primeiro fallback (OpenRouter/Nemotron) não leva `api_key` no YAML.** O Hermes resolve `OPENROUTER_API_KEY` automaticamente a partir do `.env`. Se a chave não existir, esse elo da cadeia falha e o Hermes segue para o Ollama.
 
 ---
 
 ## Notas
 
 - Sem limite de fallbacks — a cadeia é uma lista ordenada; o Hermes tenta cada um até um funcionar. 2–3 é prático.
+- Ordem padrão: **OpenRouter (Nemotron :free) → Ollama hermes3:8b → Ollama deepseek-r1:8b**. O primário (ex.: nous/tencent) fica de fora dessa lista e só ela é consultada em caso de erro.
 - O fallback só dispara em erro de rate-limit / overload / conexão do primário (não em erro de conteúdo).
 - Ollama neste Proxmox é CPU-only e lento (8B ~2 min/resposta). Use como reserva, não como cargo principal, salvo com `--primary`.
 - Para adicionar mais fallbacks, repita o bloco `- provider: custom / model: X / base_url: ...` no `config.yaml`.
